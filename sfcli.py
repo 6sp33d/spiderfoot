@@ -1326,7 +1326,9 @@ class SpiderFootCli(cmd.Cmd):
         """shell
         Run a shell command locally."""
         self.dprint("Running shell command:" + str(line))
-        self.dprint(os.popen(line).read(), plain=True)  # noqa: DUO106
+        # Running an arbitrary local shell command is the purpose of this
+        # interactive CLI command; the input comes from the local user.
+        self.dprint(os.popen(line).read(), plain=True)  # noqa: DUO106 # nosec B605
 
     def do_clear(self, line):
         """clear
