@@ -52,6 +52,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
 var sf = {};
 
+// CSRF token required by state-changing requests, set by HEADER.tmpl
+sf.csrfToken = function () {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute("content") : "";
+};
+
+// Submit a POST form to a page which responds with a redirect or HTML page
+sf.postForm = function (url, params) {
+  var form = document.createElement("form");
+  form.method = "POST";
+  form.action = url;
+  params = Object.assign({ csrf_token: sf.csrfToken() }, params || {});
+  for (var name in params) {
+    var input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = params[name];
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
+};
+
 sf.replace_sfurltag = function (data) {
   if (data.toLowerCase().indexOf("&lt;sfurl&gt;") >= 0) {
     data = data.replace(
@@ -91,8 +114,10 @@ sf.search = function (scan_id, value, type, postFunc) {
 
 sf.deleteScan = function(scan_id, callback) {
     var req = $.ajax({
-      type: "GET",
-      url: docroot + "/scandelete?id=" + scan_id
+      type: "POST",
+      url: docroot + "/scandelete",
+      data: { id: scan_id },
+      headers: { "X-CSRF-Token": sf.csrfToken() }
     });
     req.done(function() {
         alertify.success('<i class="glyphicon glyphicon-ok-circle"></i> <b>Scans Deleted</b><br/><br/>' + scan_id.replace(/,/g, "<br/>"));
@@ -107,8 +132,10 @@ sf.deleteScan = function(scan_id, callback) {
 
 sf.stopScan = function(scan_id, callback) {
     var req = $.ajax({
-      type: "GET",
-      url: docroot + "/stopscan?id=" + scan_id
+      type: "POST",
+      url: docroot + "/stopscan",
+      data: { id: scan_id },
+      headers: { "X-CSRF-Token": sf.csrfToken() }
     });
     req.done(function() {
         alertify.success('<i class="glyphicon glyphicon-ok-circle"></i> <b>Scans Aborted</b><br/><br/>' + scan_id.replace(/,/g, "<br/>"));
@@ -128,6 +155,7 @@ sf.fetchData = function (url, postData, postFunc) {
     data: postData,
     cache: false,
     dataType: "json",
+    headers: { "X-CSRF-Token": sf.csrfToken() },
   });
 
   req.done(postFunc);

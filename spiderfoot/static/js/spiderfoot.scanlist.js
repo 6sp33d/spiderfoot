@@ -91,7 +91,12 @@ function rerunSelected() {
     }
 
     sf.log("Re-running scans: " + ids.join(','));
-    window.location.href = docroot + '/rerunscanmulti?ids=' + ids.join(',');
+    sf.postForm(docroot + '/rerunscanmulti', { ids: ids.join(',') });
+}
+
+function rerunScan(id) {
+    sf.log("Re-running scan: " + id);
+    sf.postForm(docroot + '/rerunscan', { id: id });
 }
 
 function exportSelected(type) {
@@ -228,7 +233,7 @@ function showlisttable(types, filter, data) {
             table += "<a rel='tooltip' title='Stop Scan' href='javascript:stopScan(\"" + data[i][0] + "\");'><i class='glyphicon glyphicon-stop text-muted'></i></a>";
         } else {
             table += "<a rel='tooltip' title='Delete Scan' href='javascript:deleteScan(\"" + data[i][0] + "\");'><i class='glyphicon glyphicon-trash text-muted'></i></a>";
-            table += "&nbsp;&nbsp;<a rel='tooltip' title='Re-run Scan' href=" + docroot + "/rerunscan?id=" + data[i][0] + "><i class='glyphicon glyphicon-repeat text-muted'></i></a>";
+            table += "&nbsp;&nbsp;<a rel='tooltip' title='Re-run Scan' href='javascript:rerunScan(\"" + data[i][0] + "\");'><i class='glyphicon glyphicon-repeat text-muted'></i></a>";
         }
         table += "&nbsp;&nbsp;<a rel='tooltip' title='Clone Scan' href=" + docroot + "/clonescan?id=" + data[i][0] + "><i class='glyphicon glyphicon-plus-sign text-muted'></i></a>";
         table += "</td></tr>";

@@ -63,6 +63,7 @@ class SpiderFootCli(cmd.Cmd):
     prompt = "sf> "
     nohelp = "[!] Unknown command '%s'."
     knownscans = []
+    csrftoken = None
     ownopts = {
         "cli.debug": False,
         "cli.silent": False,
@@ -364,6 +365,10 @@ class SpiderFootCli(cmd.Cmd):
             "Accept": "application/json"
         }
 
+        # State-changing requests must carry the server's CSRF token
+        if post:
+            headers["X-CSRF-Token"] = self.getCsrfToken()
+
         try:
             self.ddprint(f"Fetching: {url}")
             if not post:
@@ -395,6 +400,21 @@ class SpiderFootCli(cmd.Cmd):
         except BaseException as e:
             self.edprint(f"Failed communicating with server: {e}")
             return None
+
+    # Fetch the server's CSRF token, required for POST requests
+    def getCsrfToken(self):
+        if self.csrftoken is None:
+            d = self.request(self.ownopts['cli.server_baseurl'] + "/csrftoken")
+            if not d:
+                return ""
+            try:
+                j = json.loads(d)
+                self.csrftoken = j[1] if j[0] == "SUCCESS" else ""
+            except (TypeError, ValueError, IndexError, KeyError):
+                # Servers prior to CSRF protection have no token endpoint
+                self.csrftoken = ""
+
+        return self.csrftoken
 
     def emptyline(self):
         return
@@ -1029,7 +1049,7 @@ class SpiderFootCli(cmd.Cmd):
             self.edprint("Invalid syntax.")
             return
 
-        self.request(self.ownopts['cli.server_baseurl'] + f"/stopscan?id={scan_id}")
+        self.request(self.ownopts['cli.server_baseurl'] + "/stopscan", post={"id": scan_id})
         self.dprint(f"Successfully requested scan {id} to stop. This could take some minutes to complete.")
 
     # Search for data, alias to find
@@ -1130,7 +1150,7 @@ class SpiderFootCli(cmd.Cmd):
             self.edprint("Invalid syntax.")
             return
 
-        self.request(self.ownopts['cli.server_baseurl'] + f"/scandelete?id={scan_id}")
+        self.request(self.ownopts['cli.server_baseurl'] + "/scandelete", post={"id": scan_id})
         self.dprint(f"Successfully deleted scan {scan_id}.")
 
     # Override the default help

@@ -10,13 +10,18 @@
 # License:      MIT
 # -----------------------------------------------------------------
 import csv
+import hmac
 import html
 import json
 import logging
 import multiprocessing as mp
-import random
+import pathlib
+import re
+import secrets
+import sqlite3
 import string
 import time
+from contextlib import closing
 from copy import deepcopy
 from io import BytesIO, StringIO
 from operator import itemgetter
@@ -42,11 +47,55 @@ from spiderfoot.logger import logListenerSetup, logWorkerSetup
 
 mp.set_start_method("spawn", force=True)
 
+# Escape every ${...} expression in templates unless it is explicitly
+# marked as trusted markup with the "n" filter.
+TEMPLATE_FILTERS = ['str', 'h']
+
+# Spreadsheet applications treat cells starting with these characters as
+# formulas, which lets scraped data execute when an export is opened.
+FORMULA_PREFIXES = ('=', '+', '-', '@', '\t', '\r')
+
+# Signed numbers and phone numbers start with + or - but cannot call
+# functions, so they are exported unchanged.
+HARMLESS_SIGNED_VALUE = re.compile(r'[+-][0-9\s().,+-]*')
+
+
+def csrf_protect(param: str = 'csrf_token') -> None:
+    """CherryPy tool rejecting cross-site requests to state-changing endpoints.
+
+    Only POST requests carrying the web UI's CSRF token, either in the
+    X-CSRF-Token header or in the named request parameter, are allowed.
+
+    Args:
+        param (str): request parameter that may carry the token
+
+    Raises:
+        HTTPError: request method is not POST, or the token is missing or invalid
+    """
+    request = cherrypy.request
+
+    if request.method != 'POST':
+        cherrypy.response.headers['Allow'] = 'POST'
+        raise cherrypy.HTTPError(405, "This endpoint only accepts POST requests.")
+
+    supplied = request.headers.get('X-CSRF-Token') or request.params.get(param)
+
+    # The page handler does not accept the generic token parameter
+    if param == 'csrf_token':
+        request.params.pop('csrf_token', None)
+
+    expected = getattr(request.app.root, 'token', None)
+    if not expected or not supplied or not hmac.compare_digest(str(supplied).encode('utf-8'), str(expected).encode('utf-8')):
+        raise cherrypy.HTTPError(403, "Invalid or missing CSRF token.")
+
+
+cherrypy.tools.csrf = cherrypy.Tool('before_handler', csrf_protect)
+
 
 class SpiderFootWebUi:
     """SpiderFoot web interface."""
 
-    lookup = TemplateLookup(directories=[''])
+    lookup = TemplateLookup(directories=[''], default_filters=TEMPLATE_FILTERS)
     defaultConfig = dict()
     config = dict()
     token = None
@@ -75,6 +124,9 @@ class SpiderFootWebUi:
             raise ValueError("web_config is empty")
 
         self.docroot = web_config.get('root', '/').rstrip('/')
+
+        # CSRF token required by all state-changing endpoints
+        self.token = secrets.token_urlsafe(32)
 
         # 'config' supplied will be the defaults, let's supplement them
         # now with any configuration which may have previously been saved.
@@ -121,6 +173,25 @@ class SpiderFootWebUi:
             "tools.response_headers.headers": secure_headers.framework.cherrypy()
         })
 
+    def renderTemplate(self: 'SpiderFootWebUi', template: str, **kwargs) -> str:
+        """Render a page template with HTML escaping of template expressions.
+
+        Args:
+            template (str): template file name within spiderfoot/templates
+            **kwargs: template variables
+
+        Returns:
+            str: rendered HTML
+        """
+        # TEMPLATE_FILTERS HTML-escapes every expression
+        templ = Template(  # nosec B702
+            filename=f"spiderfoot/templates/{template}",
+            lookup=self.lookup,
+            default_filters=TEMPLATE_FILTERS,
+            input_encoding='utf-8'
+        )
+        return templ.render(docroot=self.docroot, version=__version__, csrf_token=self.token, **kwargs)
+
     def error_page(self: 'SpiderFootWebUi') -> None:
         """Error page."""
         cherrypy.response.status = 500
@@ -156,8 +227,7 @@ class SpiderFootWebUi:
         Returns:
             str: HTTP response template
         """
-        templ = Template(filename='spiderfoot/templates/error.tmpl', lookup=self.lookup)
-        return templ.render(message='Not Found', docroot=self.docroot, status=status, version=__version__)
+        return self.renderTemplate('error.tmpl', message='Not Found', status=status)
 
     def jsonify_error(self: 'SpiderFootWebUi', status: str, message: str) -> dict:
         """Jsonify error response.
@@ -187,8 +257,7 @@ class SpiderFootWebUi:
         Returns:
             None
         """
-        templ = Template(filename='spiderfoot/templates/error.tmpl', lookup=self.lookup)
-        return templ.render(message=message, docroot=self.docroot, version=__version__)
+        return self.renderTemplate('error.tmpl', message=message)
 
     def cleanUserInput(self: 'SpiderFootWebUi', inputList: list) -> list:
         """Convert data to HTML entities; except quotes and ampersands.
@@ -222,6 +291,45 @@ class SpiderFootWebUi:
             ret.append(c)
 
         return ret
+
+    def validToken(self: 'SpiderFootWebUi', token: str) -> bool:
+        """Check a CSRF token supplied with a request.
+
+        Args:
+            token (str): token supplied by the client
+
+        Returns:
+            bool: token matches this web UI's CSRF token
+        """
+        if not token or not self.token:
+            return False
+
+        return hmac.compare_digest(str(token).encode('utf-8'), str(self.token).encode('utf-8'))
+
+    def csvSafeRow(self: 'SpiderFootWebUi', row: list) -> list:
+        """Neutralise spreadsheet formulas in a row of exported CSV data.
+
+        Cells which a spreadsheet application would evaluate as a formula
+        are prefixed with a single quote so they are displayed as text.
+
+        Args:
+            row (list): row of cell values
+
+        Returns:
+            list: row of cell values safe to open in a spreadsheet application
+        """
+        safe = list()
+
+        for value in row:
+            if (
+                isinstance(value, str)
+                and value.startswith(FORMULA_PREFIXES)
+                and not HARMLESS_SIGNED_VALUE.fullmatch(value)
+            ):
+                value = f"'{value}"
+            safe.append(value)
+
+        return safe
 
     def searchBase(self: 'SpiderFootWebUi', id: str = None, eventType: str = None, value: str = None) -> list:
         """Search.
@@ -309,6 +417,9 @@ class SpiderFootWebUi:
             for col_num, cell_value in enumerate(row, 1):
                 cell = sheet.cell(row=rowNums[sheetName], column=col_num)
                 cell.value = cell_value
+                # openpyxl stores strings starting with '=' as formulas
+                if cell.data_type == 'f':
+                    cell.data_type = 's'
 
             rowNums[sheetName] += 1
 
@@ -353,13 +464,13 @@ class SpiderFootWebUi:
         parser = csv.writer(fileobj, dialect=dialect)
         parser.writerow(["Date", "Component", "Type", "Event", "Event ID"])
         for row in data:
-            parser.writerow([
+            parser.writerow(self.csvSafeRow([
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[0] / 1000)),
                 str(row[1]),
                 str(row[2]),
                 str(row[3]),
                 row[4]
-            ])
+            ]))
 
         cherrypy.response.headers['Content-Disposition'] = f"attachment; filename=SpiderFoot-{id}.log.csv"
         cherrypy.response.headers['Content-Type'] = "application/csv"
@@ -422,7 +533,7 @@ class SpiderFootWebUi:
                 rule_name = row[2]
                 rule_risk = row[3]
                 rule_description = row[5]
-                parser.writerow([rule_name, correlation, rule_risk, rule_description])
+                parser.writerow(self.csvSafeRow([rule_name, correlation, rule_risk, rule_description]))
 
             if scan_name:
                 fname = f"{scan_name}-SpiderFoot-correlations.csv"
@@ -477,7 +588,7 @@ class SpiderFootWebUi:
                     continue
                 lastseen = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[0]))
                 datafield = str(row[1]).replace("<SFURL>", "").replace("</SFURL>", "")
-                parser.writerow([lastseen, str(row[4]), str(row[3]), str(row[2]), row[13], datafield])
+                parser.writerow(self.csvSafeRow([lastseen, str(row[4]), str(row[3]), str(row[2]), row[13], datafield]))
 
             fname = "SpiderFoot.csv"
             cherrypy.response.headers['Content-Disposition'] = f"attachment; filename={fname}"
@@ -544,8 +655,8 @@ class SpiderFootWebUi:
                     continue
                 lastseen = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row[0]))
                 datafield = str(row[1]).replace("<SFURL>", "").replace("</SFURL>", "")
-                parser.writerow([scaninfo[row[12]][0], lastseen, str(row[4]), str(row[3]),
-                                str(row[2]), row[13], datafield])
+                parser.writerow(self.csvSafeRow([scaninfo[row[12]][0], lastseen, str(row[4]), str(row[3]),
+                                                 str(row[2]), row[13], datafield]))
 
             if len(ids.split(',')) > 1 or scan_name == "":
                 fname = "SpiderFoot.csv"
@@ -599,7 +710,7 @@ class SpiderFootWebUi:
                 if row[10] == "ROOT":
                     continue
                 datafield = str(row[1]).replace("<SFURL>", "").replace("</SFURL>", "")
-                parser.writerow([row[0], str(row[10]), str(row[3]), str(row[2]), row[11], datafield])
+                parser.writerow(self.csvSafeRow([row[0], str(row[10]), str(row[3]), str(row[2]), row[11], datafield]))
             cherrypy.response.headers['Content-Disposition'] = "attachment; filename=SpiderFoot.csv"
             cherrypy.response.headers['Content-Type'] = "application/csv"
             cherrypy.response.headers['Pragma'] = "no-cache"
@@ -792,6 +903,7 @@ class SpiderFootWebUi:
         return ret
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     def rerunscan(self: 'SpiderFootWebUi', id: str) -> None:
         """Rerun a scan.
 
@@ -852,6 +964,7 @@ class SpiderFootWebUi:
         raise cherrypy.HTTPRedirect(f"{self.docroot}/scaninfo?id={scanId}", status=302)
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     def rerunscanmulti(self: 'SpiderFootWebUi', ids: str) -> str:
         """Rerun scans.
 
@@ -903,8 +1016,7 @@ class SpiderFootWebUi:
                 self.log.info("Waiting for the scan to initialize...")
                 time.sleep(1)
 
-        templ = Template(filename='spiderfoot/templates/scanlist.tmpl', lookup=self.lookup)
-        return templ.render(rerunscans=True, docroot=self.docroot, pageid="SCANLIST", version=__version__)
+        return self.renderTemplate('scanlist.tmpl', rerunscans=True, pageid="SCANLIST")
 
     @cherrypy.expose
     def newscan(self: 'SpiderFootWebUi') -> str:
@@ -915,10 +1027,9 @@ class SpiderFootWebUi:
         """
         dbh = SpiderFootDb(self.config)
         types = dbh.eventTypes()
-        templ = Template(filename='spiderfoot/templates/newscan.tmpl', lookup=self.lookup)
-        return templ.render(pageid='NEWSCAN', types=types, docroot=self.docroot,
-                            modules=self.config['__modules__'], scanname="",
-                            selectedmods="", scantarget="", version=__version__)
+        return self.renderTemplate('newscan.tmpl', pageid='NEWSCAN', types=types,
+                                   modules=self.config['__modules__'], scanname="",
+                                   selectedmods="", scantarget="")
 
     @cherrypy.expose
     def clonescan(self: 'SpiderFootWebUi', id: str) -> str:
@@ -948,15 +1059,14 @@ class SpiderFootWebUi:
         targetType = SpiderFootHelpers.targetTypeFromString(scantarget)
         if targetType is None:
             # It must be a name, so wrap quotes around it
-            scantarget = "&quot;" + scantarget + "&quot;"
+            scantarget = f'"{scantarget}"'
 
         modlist = scanconfig['_modulesenabled'].split(',')
 
-        templ = Template(filename='spiderfoot/templates/newscan.tmpl', lookup=self.lookup)
-        return templ.render(pageid='NEWSCAN', types=types, docroot=self.docroot,
-                            modules=self.config['__modules__'], selectedmods=modlist,
-                            scanname=str(scanname),
-                            scantarget=str(scantarget), version=__version__)
+        return self.renderTemplate('newscan.tmpl', pageid='NEWSCAN', types=types,
+                                   modules=self.config['__modules__'], selectedmods=modlist,
+                                   scanname=str(scanname),
+                                   scantarget=str(scantarget))
 
     @cherrypy.expose
     def index(self: 'SpiderFootWebUi') -> str:
@@ -965,8 +1075,7 @@ class SpiderFootWebUi:
         Returns:
             str: Scan list page HTML
         """
-        templ = Template(filename='spiderfoot/templates/scanlist.tmpl', lookup=self.lookup)
-        return templ.render(pageid='SCANLIST', docroot=self.docroot, version=__version__)
+        return self.renderTemplate('scanlist.tmpl', pageid='SCANLIST')
 
     @cherrypy.expose
     def scaninfo(self: 'SpiderFootWebUi', id: str) -> str:
@@ -983,9 +1092,7 @@ class SpiderFootWebUi:
         if res is None:
             return self.error("Scan ID not found.")
 
-        templ = Template(filename='spiderfoot/templates/scaninfo.tmpl', lookup=self.lookup, input_encoding='utf-8')
-        return templ.render(id=id, name=html.escape(res[0]), status=res[5], docroot=self.docroot, version=__version__,
-                            pageid="SCANLIST")
+        return self.renderTemplate('scaninfo.tmpl', id=id, name=res[0], status=res[5], pageid="SCANLIST")
 
     @cherrypy.expose
     def opts(self: 'SpiderFootWebUi', updated: str = None) -> str:
@@ -997,10 +1104,8 @@ class SpiderFootWebUi:
         Returns:
             str: scan options page HTML
         """
-        templ = Template(filename='spiderfoot/templates/opts.tmpl', lookup=self.lookup)
-        self.token = random.SystemRandom().randint(0, 99999999)
-        return templ.render(opts=self.config, pageid='SETTINGS', token=self.token, version=__version__,
-                            updated=updated, docroot=self.docroot)
+        return self.renderTemplate('opts.tmpl', opts=self.config, pageid='SETTINGS', token=self.token,
+                                   updated=updated)
 
     @cherrypy.expose
     def optsexport(self: 'SpiderFootWebUi', pattern: str = None) -> str:
@@ -1039,7 +1144,6 @@ class SpiderFootWebUi:
             str: settings as JSON
         """
         ret = dict()
-        self.token = random.SystemRandom().randint(0, 99999999)
         for opt in self.config:
             if not opt.startswith('__'):
                 ret["global." + opt] = self.config[opt]
@@ -1055,6 +1159,7 @@ class SpiderFootWebUi:
         return ['SUCCESS', {'token': self.token, 'data': ret}]
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     @cherrypy.tools.json_out()
     def scandelete(self: 'SpiderFootWebUi', id: str) -> str:
         """Delete scan(s).
@@ -1085,6 +1190,7 @@ class SpiderFootWebUi:
         return ""
 
     @cherrypy.expose
+    @cherrypy.tools.csrf(param='token')
     def savesettings(self: 'SpiderFootWebUi', allopts: str, token: str, configFile: 'cherrypy._cpreqbody.Part' = None) -> None:
         """Save settings, also used to completely reset them to default.
 
@@ -1099,8 +1205,8 @@ class SpiderFootWebUi:
         Raises:
             HTTPRedirect: redirect to scan settings
         """
-        if str(token) != str(self.token):
-            return self.error(f"Invalid token ({token})")
+        if not self.validToken(token):
+            return self.error("Invalid token.")
 
         # configFile seems to get set even if a file isn't uploaded
         if configFile and configFile.file:
@@ -1152,6 +1258,7 @@ class SpiderFootWebUi:
         raise cherrypy.HTTPRedirect(f"{self.docroot}/opts?updated=1")
 
     @cherrypy.expose
+    @cherrypy.tools.csrf(param='token')
     def savesettingsraw(self: 'SpiderFootWebUi', allopts: str, token: str) -> str:
         """Save settings, also used to completely reset them to default.
 
@@ -1164,8 +1271,8 @@ class SpiderFootWebUi:
         """
         cherrypy.response.headers['Content-Type'] = "application/json; charset=utf-8"
 
-        if str(token) != str(self.token):
-            return json.dumps(["ERROR", f"Invalid token ({token})."]).encode('utf-8')
+        if not self.validToken(token):
+            return json.dumps(["ERROR", "Invalid token."]).encode('utf-8')
 
         # Reset config to default
         if allopts == "RESET":
@@ -1209,6 +1316,7 @@ class SpiderFootWebUi:
         return True
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     def resultsetfp(self: 'SpiderFootWebUi', id: str, resultids: str, fp: str) -> str:
         """Set a bunch of results (hashes) as false positive.
 
@@ -1346,6 +1454,19 @@ class SpiderFootWebUi:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    def csrftoken(self: 'SpiderFootWebUi') -> list:
+        """For the CLI to obtain the CSRF token required by state-changing endpoints.
+
+        Browsers only allow pages on this server's own origin to read the response.
+
+        Returns:
+            list: CSRF token as JSON
+        """
+        return ["SUCCESS", self.token]
+
+    @cherrypy.expose
+    @cherrypy.tools.csrf()
+    @cherrypy.tools.json_out()
     def query(self: 'SpiderFootWebUi', query: str) -> str:
         """For the CLI to run queries against the database.
 
@@ -1355,23 +1476,26 @@ class SpiderFootWebUi:
         Returns:
             str: query results as JSON
         """
-        dbh = SpiderFootDb(self.config)
-
         if not query:
             return self.jsonify_error('400', "Invalid query.")
 
         if not query.lower().startswith("select"):
             return self.jsonify_error('400', "Non-SELECTs are unpredictable and not recommended.")
 
+        # Use a read-only connection so queries can never modify the database
+        database_uri = f"{pathlib.Path(self.config['__database']).resolve().as_uri()}?mode=ro"
+
         try:
-            ret = dbh.dbh.execute(query)
-            data = ret.fetchall()
-            columnNames = [c[0] for c in dbh.dbh.description]
+            with closing(sqlite3.connect(database_uri, uri=True)) as conn:
+                ret = conn.execute(query)
+                data = ret.fetchall()
+                columnNames = [c[0] for c in ret.description]
             return [dict(zip(columnNames, row)) for row in data]
         except Exception as e:
             return self.jsonify_error('500', str(e))
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     def startscan(self: 'SpiderFootWebUi', scanname: str, scantarget: str, modulelist: str, typelist: str, usecase: str) -> str:
         """Initiate a scan.
 
@@ -1505,6 +1629,7 @@ class SpiderFootWebUi:
         raise cherrypy.HTTPRedirect(f"{self.docroot}/scaninfo?id={scanId}")
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     @cherrypy.tools.json_out()
     def stopscan(self: 'SpiderFootWebUi', id: str) -> str:
         """Stop a scan.
@@ -1543,6 +1668,7 @@ class SpiderFootWebUi:
         return ""
 
     @cherrypy.expose
+    @cherrypy.tools.csrf()
     @cherrypy.tools.json_out()
     def vacuum(self):
         dbh = SpiderFootDb(self.config)

@@ -32,7 +32,7 @@
         if len(apikeylist) > 0: 
             keyicon = "&nbsp;&nbsp;<i class=\"glyphicon glyphicon-lock\"></i>"
         %>
-        <li id='tab_${mod}'><a href='#' onclick='switchTab("${mod}");' >${opts['__modules__'][mod]['name']}${keyicon}</a></li>
+        <li id='tab_${mod}'><a href='#' onclick='switchTab("${mod}");' >${opts['__modules__'][mod]['name']}${keyicon | n}</a></li>
     % endif
 % endfor
 </ul>

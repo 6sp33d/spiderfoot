@@ -1,6 +1,7 @@
 # test_sfwebui.py
 import os
 import unittest
+import urllib.parse
 
 import cherrypy
 from cherrypy.test import helper
@@ -54,6 +55,52 @@ class TestSpiderFootWebUiRoutes(helper.CPWebCase):
 
         cherrypy.tree.mount(SpiderFootWebUi(default_web_config, default_config), script_name=default_web_config.get('root'), config=conf)
 
+    def csrfToken(self):
+        return cherrypy.tree.apps[''].root.token
+
+    def postPage(self, url, params=None, token=None):
+        # POST form data, sending the web UI's CSRF token unless another token is given
+        body = urllib.parse.urlencode(params or {})
+        headers = [
+            ('Content-Type', 'application/x-www-form-urlencoded'),
+            ('Content-Length', str(len(body))),
+            ('X-CSRF-Token', self.csrfToken() if token is None else token),
+        ]
+        self.getPage(url, headers=headers, method='POST', body=body)
+
+    def test_state_changing_endpoints_reject_get_requests(self):
+        for endpoint in ['/startscan', '/stopscan', '/scandelete', '/rerunscan', '/rerunscanmulti',
+                         '/resultsetfp', '/savesettings', '/savesettingsraw', '/query', '/vacuum']:
+            with self.subTest(endpoint=endpoint):
+                self.getPage(endpoint)
+                self.assertStatus('405 Method Not Allowed')
+
+    def test_state_changing_endpoints_reject_missing_csrf_token(self):
+        self.getPage("/scandelete", method='POST', body="id=doesnotexist",
+                     headers=[('Content-Type', 'application/x-www-form-urlencoded'), ('Content-Length', '15')])
+        self.assertStatus('403 Forbidden')
+
+    def test_state_changing_endpoints_reject_invalid_csrf_token(self):
+        self.postPage("/scandelete", {"id": "doesnotexist"}, token="invalid")
+        self.assertStatus('403 Forbidden')
+
+    def test_csrf_token_accepted_as_form_parameter(self):
+        body = urllib.parse.urlencode({"id": "doesnotexist", "csrf_token": self.csrfToken()})
+        self.getPage("/scandelete", method='POST', body=body,
+                     headers=[('Content-Type', 'application/x-www-form-urlencoded'), ('Content-Length', str(len(body)))])
+        self.assertStatus('404 Not Found')
+        self.assertInBody('Scan doesnotexist does not exist')
+
+    def test_csrftoken_returns_token(self):
+        self.getPage("/csrftoken")
+        self.assertStatus('200 OK')
+        self.assertInBody(self.csrfToken())
+
+    def test_pages_include_csrf_token(self):
+        self.getPage("/newscan")
+        self.assertStatus('200 OK')
+        self.assertInBody(f'<meta name="csrf-token" content="{self.csrfToken()}">')
+
     def test_invalid_page_returns_404(self):
         self.getPage("/doesnotexist")
         self.assertStatus('404 Not Found')
@@ -91,12 +138,12 @@ class TestSpiderFootWebUiRoutes(helper.CPWebCase):
         self.assertStatus('200 OK')
 
     def test_rerunscan(self):
-        self.getPage("/rerunscan?id=doesnotexist")
+        self.postPage("/rerunscan", {"id": "doesnotexist"})
         self.assertStatus('200 OK')
         self.assertInBody("Invalid scan ID.")
 
     def test_rerunscanmulti_invalid_scan_id_returns_200(self):
-        self.getPage("/rerunscanmulti?ids=doesnotexist")
+        self.postPage("/rerunscanmulti", {"ids": "doesnotexist"})
         self.assertStatus('200 OK')
         self.assertInBody("Invalid scan ID.")
 
@@ -138,7 +185,7 @@ class TestSpiderFootWebUiRoutes(helper.CPWebCase):
         self.assertStatus('200 OK')
 
     def test_scandelete_invalid_scan_id_returns_404(self):
-        self.getPage("/scandelete?id=doesnotexist")
+        self.postPage("/scandelete", {"id": "doesnotexist"})
         self.assertStatus('404 Not Found')
         self.assertInBody('Scan doesnotexist does not exist')
 
@@ -153,7 +200,7 @@ class TestSpiderFootWebUiRoutes(helper.CPWebCase):
         self.assertStatus('200 OK')
 
     def test_resultsetfp(self):
-        self.getPage("/resultsetfp?id=doesnotexist&resultids=doesnotexist&fp=1")
+        self.postPage("/resultsetfp", {"id": "doesnotexist", "resultids": "doesnotexist", "fp": "1"})
         self.assertStatus('200 OK')
         self.assertInBody("No IDs supplied.")
 
@@ -173,41 +220,41 @@ class TestSpiderFootWebUiRoutes(helper.CPWebCase):
         self.assertInBody('"SUCCESS"')
 
     def test_query_returns_200(self):
-        self.getPage("/query?query=SELECT+1")
+        self.postPage("/query", {"query": "SELECT 1"})
         self.assertStatus('200 OK')
         self.assertInBody('[{"1": 1}]')
 
     def test_startscan_invalid_scan_name_returns_error(self):
-        self.getPage("/startscan?scanname=&scantarget=&modulelist=&typelist=&usecase=")
+        self.postPage("/startscan", {"scanname": "", "scantarget": "", "modulelist": "", "typelist": "", "usecase": ""})
         self.assertStatus('200 OK')
         self.assertInBody('Invalid request: scan name was not specified.')
 
     def test_startscan_invalid_scan_target_returns_error(self):
-        self.getPage("/startscan?scanname=example-scan&scantarget=&modulelist=&typelist=&usecase=")
+        self.postPage("/startscan", {"scanname": "example-scan", "scantarget": "", "modulelist": "", "typelist": "", "usecase": ""})
         self.assertStatus('200 OK')
         self.assertInBody('Invalid request: scan target was not specified.')
 
     def test_startscan_unrecognized_scan_target_returns_error(self):
-        self.getPage("/startscan?scanname=example-scan&scantarget=invalid-target&modulelist=doesnotexist&typelist=doesnotexist&usecase=doesnotexist")
+        self.postPage("/startscan", {"scanname": "example-scan", "scantarget": "invalid-target", "modulelist": "doesnotexist", "typelist": "doesnotexist", "usecase": "doesnotexist"})
         self.assertStatus('200 OK')
         self.assertInBody('Invalid target type. Could not recognize it as a target SpiderFoot supports.')
 
     def test_startscan_invalid_modules_returns_error(self):
-        self.getPage("/startscan?scanname=example-scan&scantarget=spiderfoot.net&modulelist=&typelist=&usecase=")
+        self.postPage("/startscan", {"scanname": "example-scan", "scantarget": "spiderfoot.net", "modulelist": "", "typelist": "", "usecase": ""})
         self.assertStatus('200 OK')
         self.assertInBody('Invalid request: no modules specified for scan.')
 
     def test_startscan_invalid_typelist_returns_error(self):
-        self.getPage("/startscan?scanname=example-scan&scantarget=spiderfoot.net&modulelist=&typelist=doesnotexist&usecase=")
+        self.postPage("/startscan", {"scanname": "example-scan", "scantarget": "spiderfoot.net", "modulelist": "", "typelist": "doesnotexist", "usecase": ""})
         self.assertStatus('200 OK')
         self.assertInBody('Invalid request: no modules specified for scan.')
 
     def test_startscan_should_start_a_scan(self):
-        self.getPage("/startscan?scanname=spiderfoot.net&scantarget=spiderfoot.net&modulelist=doesnotexist&typelist=doesnotexist&usecase=doesnotexist")
+        self.postPage("/startscan", {"scanname": "spiderfoot.net", "scantarget": "spiderfoot.net", "modulelist": "doesnotexist", "typelist": "doesnotexist", "usecase": "doesnotexist"})
         self.assertStatus('303 See Other')
 
     def test_stopscan_invalid_scan_id_returns_404(self):
-        self.getPage("/stopscan?id=doesnotexist")
+        self.postPage("/stopscan", {"id": "doesnotexist"})
         self.assertStatus('404 Not Found')
         self.assertInBody('Scan doesnotexist does not exist')
 

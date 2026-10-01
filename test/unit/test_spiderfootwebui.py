@@ -322,6 +322,92 @@ class TestSpiderFootWebUi(unittest.TestCase):
         self.assertIsInstance(scan_error, str)
         self.assertIn("example message", scan_error)
 
+    def test_error_should_escape_html(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        scan_error = sfwebui.error("<script>alert(1)</script>")
+        self.assertNotIn("<script>alert(1)</script>", scan_error)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", scan_error)
+
+    def test_newscan_should_escape_cloned_scan_values(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        page = sfwebui.renderTemplate('newscan.tmpl', pageid='NEWSCAN', types=[], modules=dict(),
+                                      selectedmods="", scanname='x" onfocus="alert(1)', scantarget="")
+        self.assertNotIn('value="x" onfocus="alert(1)"', page)
+        self.assertIn('value="x&#34; onfocus=&#34;alert(1)"', page)
+
+    def test_rendered_pages_should_include_csrf_token(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        page = sfwebui.renderTemplate('scanlist.tmpl', pageid='SCANLIST')
+        self.assertIn(f'<meta name="csrf-token" content="{sfwebui.token}">', page)
+
+    def test_token_should_be_random_and_validated(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+        other = SpiderFootWebUi(self.web_default_options, opts)
+
+        self.assertGreaterEqual(len(sfwebui.token), 32)
+        self.assertNotEqual(sfwebui.token, other.token)
+        self.assertTrue(sfwebui.validToken(sfwebui.token))
+        self.assertFalse(sfwebui.validToken(other.token))
+        self.assertFalse(sfwebui.validToken(None))
+        self.assertFalse(sfwebui.validToken(""))
+
+    def test_csrftoken_should_return_token(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        self.assertEqual(["SUCCESS", sfwebui.token], sfwebui.csrftoken())
+
+    def test_csvSafeRow_should_neutralise_formulas(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        formulas = [
+            '=HYPERLINK("http://example.invalid","x")',
+            "+cmd|' /C calc'!A0",
+            "-2+3+cmd|' /C calc'!A0",
+            "@SUM(1+1)",
+            "\t=1+1",
+            "\r=1+1",
+        ]
+        for value in formulas:
+            with self.subTest(value=value):
+                self.assertEqual([f"'{value}"], sfwebui.csvSafeRow([value]))
+
+    def test_csvSafeRow_should_not_change_harmless_values(self):
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        values = ["example.com", "+1 (555) 123-4567", "-42", "-1.5", "", None, 1, "a=b"]
+        self.assertEqual(values, sfwebui.csvSafeRow(values))
+
+    def test_buildExcel_should_store_formulas_as_text(self):
+        import io
+        import openpyxl
+
+        opts = self.default_options
+        opts['__modules__'] = dict()
+        sfwebui = SpiderFootWebUi(self.web_default_options, opts)
+
+        payload = '=HYPERLINK("http://example.invalid","x")'
+        xlsx = sfwebui.buildExcel([["DOMAIN_NAME", payload]], ["Type", "Data"], sheetNameIndex=0)
+        cell = openpyxl.load_workbook(io.BytesIO(xlsx))["DOMAIN_NAME"]["A2"]
+        self.assertEqual(payload, cell.value)
+        self.assertEqual('s', cell.data_type)
+
     def test_scandelete_invalid_scanid_should_return_an_error(self):
         """
         Test scandelete(self, id)

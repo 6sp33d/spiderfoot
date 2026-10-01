@@ -3,6 +3,7 @@ import io
 import pytest
 import sys
 import unittest
+from unittest import mock
 
 from sfcli import SpiderFootCli
 
@@ -293,6 +294,46 @@ class TestSpiderFootCli(unittest.TestCase):
             with self.subTest(invalid_type=invalid_type):
                 result = sfcli.request(invalid_type)
                 self.assertEqual(None, result)
+
+    def test_request_post_should_send_csrf_token(self):
+        """
+        Test request(self, url, post=None)
+        """
+        sfcli = SpiderFootCli()
+        sfcli.csrftoken = "example-token"
+
+        with mock.patch("sfcli.requests.post") as post:
+            post.return_value.status_code = 200
+            post.return_value.text = '["SUCCESS", ""]'
+            sfcli.request("http://127.0.0.1:5001/stopscan", post={"id": "example"})
+
+        self.assertEqual("example-token", post.call_args.kwargs["headers"]["X-CSRF-Token"])
+
+    def test_getCsrfToken_should_fetch_and_cache_token(self):
+        """
+        Test getCsrfToken(self)
+        """
+        sfcli = SpiderFootCli()
+        sfcli.csrftoken = None
+
+        with mock.patch.object(sfcli, "request", return_value='["SUCCESS", "example-token"]') as request:
+            self.assertEqual("example-token", sfcli.getCsrfToken())
+            self.assertEqual("example-token", sfcli.getCsrfToken())
+
+        request.assert_called_once()
+        self.assertTrue(request.call_args.args[0].endswith("/csrftoken"))
+
+    def test_getCsrfToken_unreachable_server_should_not_cache(self):
+        """
+        Test getCsrfToken(self)
+        """
+        sfcli = SpiderFootCli()
+        sfcli.csrftoken = None
+
+        with mock.patch.object(sfcli, "request", return_value=None):
+            self.assertEqual("", sfcli.getCsrfToken())
+
+        self.assertIsNone(sfcli.csrftoken)
 
     def test_emptyline_should_return_none(self):
         """
