@@ -16,7 +16,7 @@ import logging
 import multiprocessing as mp
 import os
 import os.path
-import random
+import secrets
 import signal
 import sys
 import time
@@ -46,6 +46,7 @@ def main() -> None:
         'port': 5001,
         'root': '/',
         'cors_origins': [],
+        'insecure_no_auth': False,
     }
 
     # 'Global' configuration options
@@ -94,6 +95,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=f"SpiderFoot {__version__}: Open Source Intelligence Automation.")
     p.add_argument("-d", "--debug", action='store_true', help="Enable debug output.")
     p.add_argument("-l", metavar="IP:port", help="IP and port to listen on.")
+    p.add_argument("--insecure-no-auth", action='store_true', help="Do not require authentication for the web interface when no passwd file exists. Not recommended.")
     p.add_argument("-m", metavar="mod1,mod2,...", type=str, help="Modules to enable.")
     p.add_argument("-M", "--modules", action='store_true', help="List available modules.")
     p.add_argument("-C", "--correlate", metavar="scanID", help="Run correlation rules against a scan ID.")
@@ -225,6 +227,7 @@ def main() -> None:
 
         sfWebUiConfig['host'] = host
         sfWebUiConfig['port'] = port
+        sfWebUiConfig['insecure_no_auth'] = args.insecure_no_auth
 
         start_web_server(sfWebUiConfig, sfConfig, loggingQueue)
         sys.exit(0)
@@ -458,6 +461,92 @@ def start_scan(sfConfig: dict, sfModules: dict, args, loggingQueue) -> None:
     return
 
 
+def load_web_credentials(passwd_file: str) -> dict:
+    """Load web interface credentials from a passwd file.
+
+    Args:
+        passwd_file (str): path to a file of username:password lines
+
+    Returns:
+        dict: passwords keyed by username, empty if the file does not exist or has no credentials
+    """
+    log = logging.getLogger(f"spiderfoot.{__name__}")
+
+    credentials = dict()
+
+    if not os.path.isfile(passwd_file):
+        return credentials
+
+    if not os.access(passwd_file, os.R_OK):
+        log.error("Could not read passwd file. Permission denied.")
+        sys.exit(-1)
+
+    with open(passwd_file, 'r') as f:
+        passwd_data = f.readlines()
+
+    for line in passwd_data:
+        if line.strip() == '':
+            continue
+
+        if ':' not in line:
+            log.error("Incorrect format of passwd file, must be username:password on each line.")
+            sys.exit(-1)
+
+        u = line.strip().split(":")[0]
+        p = ':'.join(line.strip().split(":")[1:])
+
+        if not u or not p:
+            log.error("Incorrect format of passwd file, must be username:password on each line.")
+            sys.exit(-1)
+
+        credentials[u] = p
+
+    return credentials
+
+
+def create_web_credentials(passwd_file: str) -> dict:
+    """Create a passwd file with a randomly generated admin password.
+
+    The password is printed to the console once and is not logged.
+
+    Args:
+        passwd_file (str): path of the passwd file to create
+
+    Returns:
+        dict: the generated password keyed by username
+    """
+    log = logging.getLogger(f"spiderfoot.{__name__}")
+
+    username = "admin"
+    password = secrets.token_urlsafe(18)
+
+    try:
+        fd = os.open(passwd_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(f"{username}:{password}\n")
+        os.chmod(passwd_file, 0o600)
+    except OSError as e:
+        log.critical(f"Could not create passwd file {passwd_file}: {e}")
+        log.critical("Create the file with username:password lines, or start with --insecure-no-auth (not recommended).")
+        sys.exit(-1)
+
+    log.info(f"Generated web interface credentials for user '{username}' in {passwd_file}")
+
+    print("")
+    print("*************************************************************")
+    print(" No passwd file was found, so web interface credentials")
+    print(" have been generated:")
+    print("")
+    print(f"   Username: {username}")
+    print(f"   Password: {password}")
+    print("")
+    print(f" They are stored in {passwd_file}")
+    print("*************************************************************")
+    print("")
+
+    return {username: password}
+
+
 def start_web_server(sfWebUiConfig: dict, sfConfig: dict, loggingQueue=None) -> None:
     """Start the web server so you can start looking at results
 
@@ -494,46 +583,25 @@ def start_web_server(sfWebUiConfig: dict, sfConfig: dict, loggingQueue=None) -> 
         }
     }
 
-    secrets = dict()
     passwd_file = SpiderFootHelpers.dataPath() + '/passwd'
-    if os.path.isfile(passwd_file):
-        if not os.access(passwd_file, os.R_OK):
-            log.error("Could not read passwd file. Permission denied.")
-            sys.exit(-1)
+    credentials = load_web_credentials(passwd_file)
 
-        with open(passwd_file, 'r') as f:
-            passwd_data = f.readlines()
+    if not credentials and not sfWebUiConfig.get('insecure_no_auth'):
+        credentials = create_web_credentials(passwd_file)
 
-        for line in passwd_data:
-            if line.strip() == '':
-                continue
-
-            if ':' not in line:
-                log.error("Incorrect format of passwd file, must be username:password on each line.")
-                sys.exit(-1)
-
-            u = line.strip().split(":")[0]
-            p = ':'.join(line.strip().split(":")[1:])
-
-            if not u or not p:
-                log.error("Incorrect format of passwd file, must be username:password on each line.")
-                sys.exit(-1)
-
-            secrets[u] = p
-
-    if secrets:
+    if credentials:
         log.info("Enabling authentication based on supplied passwd file.")
         conf['/'] = {
             'tools.auth_digest.on': True,
             'tools.auth_digest.realm': web_host,
-            'tools.auth_digest.get_ha1': auth_digest.get_ha1_dict_plain(secrets),
-            'tools.auth_digest.key': random.SystemRandom().randint(0, 99999999)
+            'tools.auth_digest.get_ha1': auth_digest.get_ha1_dict_plain(credentials),
+            'tools.auth_digest.key': secrets.token_hex(16)
         }
     else:
         warn_msg = "\n********************************************************************\n"
-        warn_msg += "Warning: passwd file contains no passwords. Authentication disabled.\n"
-        warn_msg += "Please consider adding authentication to protect this instance!\n"
-        warn_msg += "Refer to https://www.spiderfoot.net/documentation/#security.\n"
+        warn_msg += "Warning: Authentication disabled (--insecure-no-auth).\n"
+        warn_msg += "Anyone who can reach this web server can run scans and change settings.\n"
+        warn_msg += f"Remove --insecure-no-auth or add username:password lines to {passwd_file}.\n"
         warn_msg += "********************************************************************\n"
         log.warning(warn_msg)
 
