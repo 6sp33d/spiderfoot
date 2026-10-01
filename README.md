@@ -4,11 +4,13 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/smicallef/spiderfoot/master/LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.10+-green)](https://www.python.org)
 [![Stable Release](https://img.shields.io/badge/version-4.0-blue.svg)](https://github.com/smicallef/spiderfoot/releases/tag/v4.0)
-[![CI status](https://github.com/smicallef/spiderfoot/workflows/Tests/badge.svg)](https://github.com/smicallef/spiderfoot/actions?query=workflow%3A"Tests")
-[![Last Commit](https://img.shields.io/github/last-commit/smicallef/spiderfoot)](https://github.com/smicallef/spiderfoot/commits/master)
+[![CI status](https://github.com/6sp33d/spiderfoot/workflows/Tests/badge.svg)](https://github.com/6sp33d/spiderfoot/actions?query=workflow%3A"Tests")
+[![Last Commit](https://img.shields.io/github/last-commit/6sp33d/spiderfoot)](https://github.com/6sp33d/spiderfoot/commits/master)
 [![Codecov](https://codecov.io/github/smicallef/spiderfoot/coverage.svg)](https://codecov.io/github/smicallef/spiderfoot)
 [![Twitter Follow](https://img.shields.io/twitter/follow/spiderfoot?label=follow&style=social)](https://twitter.com/spiderfoot)
 [![Discord](https://img.shields.io/discord/770524432464216074)](https://discord.gg/vyvztrG)
+
+> **About this fork:** upstream SpiderFoot ([smicallef/spiderfoot](https://github.com/smicallef/spiderfoot)) has had no commits since November 2023, and SpiderFoot HX has been discontinued. This fork keeps the open source tool maintained: current dependencies, supported Python versions, CI with security scanning, and a hardened web interface. See [docs/FORK_EVALUATION.md](docs/FORK_EVALUATION.md) for why it is based on upstream 4.0 and for the roadmap.
 
 **SpiderFoot** is an open source intelligence (OSINT) automation tool. It integrates with just about every data source available and utilises a range of methods for data analysis, making that data easy to navigate. 
 
@@ -32,25 +34,6 @@ SpiderFoot has an embedded web-server for providing a clean and intuitive web-ba
 - Dockerfile for Docker-based deployments
 - Can call other tools like DNSTwist, Whatweb, Nmap and CMSeeK
 - [Actively developed since 2012!](https://medium.com/@micallst/lessons-learned-from-my-10-year-open-source-project-4a4c8c2b4f64)
-
-### WANT MORE?
-
-Need more from SpiderFoot? Check out [SpiderFoot HX](https://www.spiderfoot.net/hx) for:
-- 100% Cloud-based and managed for you
-- Attack Surface Monitoring with change notifications by email, REST and Slack
-- Multiple targets per scan
-- Multi-user collaboration
-- Authenticated and 2FA
-- Investigations
-- Customer support
-- Third party tools pre-installed & configured
-- Drive it with a fully RESTful API
-- TOR integration built-in
-- Screenshotting
-- Bring your own Python SpiderFoot modules
-- Feed scan data to Splunk, ElasticSearch and REST endpoints
-
-See the full set of differences between SpiderFoot HX and the open source version [here](https://www.spiderfoot.net/open-source-vs-hx/).
 
 ### USES
 
@@ -90,26 +73,28 @@ SpiderFoot's 200+ modules feed each other in a publisher/subscriber model to ens
 
 ### INSTALLING & RUNNING
 
-To install and run SpiderFoot, you need at least Python 3.10 and a number of Python libraries which you can install with `pip`. We recommend you install a packaged release since master will often have bleeding edge features and modules that aren't fully tested.
-
-#### Stable build (packaged release):
+To install and run SpiderFoot, you need at least Python 3.10 and a number of Python libraries which you can install with `pip`:
 
 ```
- wget https://github.com/smicallef/spiderfoot/archive/v4.0.tar.gz
- tar zxvf v4.0.tar.gz
- cd spiderfoot-4.0
- pip3 install -r requirements.txt
- python3 ./sf.py -l 127.0.0.1:5001
-```
-
-#### Development build (cloning git master branch):
-
-```
- git clone https://github.com/smicallef/spiderfoot.git
+ git clone https://github.com/6sp33d/spiderfoot.git
  cd spiderfoot
+ python3 -m venv venv && . venv/bin/activate
  pip3 install -r requirements.txt
  python3 ./sf.py -l 127.0.0.1:5001
 ```
+
+Or with Docker:
+
+```
+ docker compose up -d
+ docker compose logs spiderfoot   # shows the generated web interface password on first start
+```
+
+#### Web interface security
+
+- **Authentication is required by default.** On first start, if `passwd` does not exist in the SpiderFoot data directory (`~/.spiderfoot` or `$SPIDERFOOT_DATA`), SpiderFoot creates it with a random password for the user `admin` and prints the credentials once to the console. Add more `username:password` lines to that file to create more users. Starting with `--insecure-no-auth` disables authentication when there is no `passwd` file; only do this on a single-user machine bound to `127.0.0.1`.
+- **State-changing endpoints require POST and a CSRF token** (`startscan`, `stopscan`, `scandelete`, `rerunscan`, `rerunscanmulti`, `resultsetfp`, `savesettings`, `savesettingsraw`, `query`, `vacuum`). Scripts that call these endpoints directly must send the token from `GET /csrftoken` in an `X-CSRF-Token` header or a `csrf_token` form field. `sfcli.py` does this automatically.
+- Exported CSV and Excel files neutralise spreadsheet formulas found in scan data.
 
 Check out the [documentation](https://www.spiderfoot.net/documentation) and our [asciinema videos](https://asciinema.org/~spiderfoot) for more tutorials.
 
@@ -361,6 +346,6 @@ Whois|Perform a WHOIS look-up on domain names and owned netblocks.|Internal
 
 ### DOCUMENTATION
 
-Read more at the [project website](https://www.spiderfoot.net/r.php?u=aHR0cHM6Ly93d3cuc3BpZGVyZm9vdC5uZXQv&s=os_gh), including more complete documentation, blog posts with tutorials/guides, plus information about [SpiderFoot HX](https://www.spiderfoot.net/r.php?u=aHR0cHM6Ly93d3cuc3BpZGVyZm9vdC5uZXQvaHgvCg==&s=os_gh).
+The original upstream documentation and tutorials remain on the [project website](https://www.spiderfoot.net/documentation) and in the [asciinema videos](https://asciinema.org/~spiderfoot). Changes made in this fork are described in [docs/FORK_EVALUATION.md](docs/FORK_EVALUATION.md).
 
 Latest updates announced on [Twitter](https://twitter.com/spiderfoot).
