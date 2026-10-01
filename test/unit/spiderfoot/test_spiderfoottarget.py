@@ -94,8 +94,8 @@ class TestSpiderFootTarget(unittest.TestCase):
         invalid_types = [None, list(), bytes(), dict(), int()]
         for invalid_type in invalid_types:
             with self.subTest(invalid_type=invalid_type):
+                target = SpiderFootTarget(target_value, target_type)
                 with self.assertRaises(TypeError):
-                    target = SpiderFootTarget(target_value, target_type)
                     target.targetType = invalid_type
 
     def test_targetValue_attribute_should_return_a_string(self):
@@ -113,16 +113,16 @@ class TestSpiderFootTarget(unittest.TestCase):
         invalid_types = [None, list(), bytes(), dict(), int()]
         for invalid_type in invalid_types:
             with self.subTest(invalid_type=invalid_type):
+                target = SpiderFootTarget(target_value, target_type)
                 with self.assertRaises(TypeError):
-                    target = SpiderFootTarget(target_value, target_type)
                     target.targetValue = invalid_type
 
     def test_targetValue_attribute_setter_empty_value_should_raise_ValueError(self):
         target_value = 'example target value'
         target_type = 'IP_ADDRESS'
 
+        target = SpiderFootTarget(target_value, target_type)
         with self.assertRaises(ValueError):
-            target = SpiderFootTarget(target_value, target_type)
             target.targetValue = ""
 
     def test_targetAliases_attribute_should_return_a_list(self):
