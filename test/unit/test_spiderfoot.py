@@ -1,6 +1,9 @@
 # test_spiderfoot.py
 import pytest
 import unittest
+from unittest import mock
+
+import requests
 
 from sflib import SpiderFoot
 
@@ -686,6 +689,20 @@ class TestSpiderFoot(unittest.TestCase):
         self.assertIsInstance(res, dict)
         self.assertEqual(res['code'], "301")
         self.assertEqual(res['content'], None)
+
+    def test_fetchUrl_connection_error_should_return_result_without_content(self):
+        sf = SpiderFoot(self.default_options)
+
+        for headOnly in [False, True]:
+            with self.subTest(headOnly=headOnly):
+                with mock.patch.object(sf, 'getSession') as getSession:
+                    session = getSession.return_value
+                    session.get.side_effect = requests.exceptions.ConnectionError("connection reset")
+                    session.head.side_effect = requests.exceptions.ConnectionError("connection reset")
+                    res = sf.fetchUrl("https://example.invalid/", headOnly=headOnly)
+
+                self.assertIsInstance(res, dict)
+                self.assertEqual(None, res['content'])
 
     def test_fetchUrl_argument_url_invalid_type_should_return_none(self):
         sf = SpiderFoot(self.default_options)
