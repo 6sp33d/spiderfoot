@@ -51,6 +51,9 @@ class SpiderFootThreadPool:
         self._lock = threading.Lock()
 
     def start(self) -> None:
+        # Don't spawn a second set of workers (orphaning the first) if the pool is already running
+        if any(t is not None and t.is_alive() and not t.stop for t in self.pool):
+            return
         self.log.debug(f'Starting thread pool "{self.name}" with {self.threads:,} threads')
         for i in range(self.threads):
             t = ThreadPoolWorker(pool=self, name=f"{self.name}_worker_{i + 1}")

@@ -1,8 +1,10 @@
 # test_spiderfootplugin.py
 import pytest
+import threading
 import unittest
 
 from spiderfoot import SpiderFootThreadPool
+from spiderfoot.threadpool import ThreadPoolWorker
 
 
 @pytest.mark.usefixtures
@@ -61,6 +63,7 @@ class TestSpiderFootThreadPool(unittest.TestCase):
             ("e", ("arg1",), ("kwarg1", "kwarg1")),
             ("f", ("arg1",), ("kwarg1", "kwarg1"))
         ]
+        workers_before = [t for t in threading.enumerate() if isinstance(t, ThreadPoolWorker)]
         pool = SpiderFootThreadPool(threads)
         pool.start()
         for i in iterable2:
@@ -82,3 +85,10 @@ class TestSpiderFootThreadPool(unittest.TestCase):
         )
         self.assertEqual(map_results, expectedOutput)
         self.assertEqual(submit_results, expectedOutput2)
+
+        # map() after start() must reuse the running workers rather than orphan them,
+        # as orphaned workers are never stopped by shutdown()
+        workers = [t for t in threading.enumerate() if isinstance(t, ThreadPoolWorker) and t not in workers_before]
+        for t in workers:
+            t.join(timeout=5)
+        self.assertEqual([t.name for t in workers if t.is_alive()], [])

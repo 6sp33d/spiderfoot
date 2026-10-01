@@ -1,9 +1,11 @@
 # test_spiderfootscanner.py
 import pytest
+import threading
 import unittest
 import uuid
 
 from sfscan import SpiderFootScanner
+from spiderfoot.threadpool import ThreadPoolWorker
 
 
 @pytest.mark.usefixtures
@@ -31,9 +33,16 @@ class TestSpiderFootScanner(unittest.TestCase):
         scan_id = str(uuid.uuid4())
         module_list = ['invalid module']
 
+        workers_before = [t for t in threading.enumerate() if isinstance(t, ThreadPoolWorker)]
         sfscan = SpiderFootScanner("example scan name", scan_id, "spiderfoot.net", "INTERNET_NAME", module_list, opts, start=True)
         self.assertIsInstance(sfscan, SpiderFootScanner)
         self.assertEqual(sfscan.status, "ERROR-FAILED")
+
+        # the scan's thread pool workers must exit, otherwise the scan process never terminates
+        workers = [t for t in threading.enumerate() if isinstance(t, ThreadPoolWorker) and t not in workers_before]
+        for t in workers:
+            t.join(timeout=5)
+        self.assertEqual([t.name for t in workers if t.is_alive()], [])
 
     def test_init_argument_scanName_of_invalid_type_should_raise_TypeError(self):
         """

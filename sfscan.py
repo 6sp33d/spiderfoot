@@ -362,7 +362,6 @@ class SpiderFootScanner():
 
             if not self.__moduleInstances:
                 self.__setStatus("ERROR-FAILED", None, time.time() * 1000)
-                self.__dbh.close()
                 return
 
             # sort modules by priority
@@ -419,6 +418,10 @@ class SpiderFootScanner():
             self.__setStatus("ERROR-FAILED", None, time.time() * 1000)
 
         finally:
+            # Stop the shared thread pool workers in case the scan ended before
+            # waitForThreads() could shut the pool down. A second shutdown is a no-op.
+            self.__sharedThreadPool.shutdown(wait=False)
+
             if not failed:
                 self.__setStatus("FINISHED", None, time.time() * 1000)
                 self.runCorrelations()
