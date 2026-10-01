@@ -3,7 +3,9 @@
 #
 # Must be run with ./test/acceptance as current working directory.
 #
-# Requires SpiderFoot web server to be running on default port.
+# Requires SpiderFoot web server to be running on default port without
+# authentication, as the browser tests do not log in:
+#   python3 ./sf.py -l 127.0.0.1:5001 --insecure-no-auth
 #
 # Requires robotframework:
 #   cd test/acceptance; pip3 install -r requirements.txt

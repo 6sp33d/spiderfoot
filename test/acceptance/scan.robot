@@ -1,5 +1,5 @@
 # To run the tests, start sf web interface:
-#   python3 ./sf.py -l 127.0.0.1:5001
+#   python3 ./sf.py -l 127.0.0.1:5001 --insecure-no-auth
 # then run robot (override the BROWSER variable if necessary):
 #   robot --variable BROWSER:Firefox --outputdir results scan.robot
 
