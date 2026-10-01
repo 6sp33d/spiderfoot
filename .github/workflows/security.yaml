@@ -1,0 +1,71 @@
+name: Security
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly, so newly published advisories are caught without a code change.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            test/requirements.txt
+
+      - name: Install pip-audit
+        # Use the version pinned in test/requirements.txt.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "$(grep -E '^pip-audit==' test/requirements.txt)"
+
+      - name: Audit runtime requirements
+        run: python -m pip_audit --progress-spinner off -r requirements.txt
+
+      - name: Audit test requirements
+        run: python -m pip_audit --progress-spinner off -r test/requirements.txt
+
+  bandit:
+    name: bandit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: test/requirements.txt
+
+      - name: Install bandit
+        # Use the version pinned in test/requirements.txt.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "$(grep -E '^bandit==' test/requirements.txt)"
+
+      - name: Report medium and higher findings (informational)
+        run: bandit -r . -x ./test -ll --exit-zero
+
+      - name: Fail on high severity, high confidence findings
+        run: bandit -r . -x ./test -lll -iii
